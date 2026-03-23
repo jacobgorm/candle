@@ -676,6 +676,7 @@ impl Tensor {
             Storage::Cpu(cpu_storage) => from_cpu_storage(cpu_storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::D3D12(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1948,6 +1949,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::D3D12(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1979,6 +1981,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::D3D12(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2020,6 +2023,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::D3D12(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2382,6 +2386,12 @@ impl Tensor {
                     // can't clone storage if it's the same device because of the underlying device ptr
                     let dst_storage = storage.transfer_to_device(cuda)?;
                     Storage::Cuda(dst_storage)
+                }
+                (Storage::Cpu(storage), Device::D3D12(d3d12)) => {
+                    Storage::D3D12(d3d12.storage_from_cpu_storage(storage)?)
+                }
+                (Storage::D3D12(storage), Device::Cpu) => {
+                    Storage::Cpu(storage.to_cpu_storage()?)
                 }
                 (Storage::Cpu(storage), Device::Cpu) => Storage::Cpu(storage.clone()),
                 _ => {

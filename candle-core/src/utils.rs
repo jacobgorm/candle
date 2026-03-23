@@ -28,6 +28,10 @@ pub fn metal_is_available() -> bool {
     cfg!(feature = "metal")
 }
 
+pub fn d3d12_is_available() -> bool {
+    cfg!(feature = "d3d12")
+}
+
 pub fn with_avx() -> bool {
     cfg!(target_feature = "avx2")
 }

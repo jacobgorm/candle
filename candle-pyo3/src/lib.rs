@@ -85,6 +85,7 @@ impl PyDevice {
             Device::Cpu => Self::Cpu,
             Device::Cuda(_) => Self::Cuda,
             Device::Metal(_) => Self::Metal,
+            Device::D3D12(_) => Self::Cpu, // D3D12 not exposed to Python yet
         }
     }
 

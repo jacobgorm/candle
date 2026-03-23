@@ -1,6 +1,6 @@
 use crate::op::{BackpropOp, Op};
 use crate::tensor::from_storage;
-use crate::{CpuStorage, CudaStorage, Layout, MetalStorage, Result, Shape, Tensor};
+use crate::{CpuStorage, CudaStorage, D3D12Storage, Layout, MetalStorage, Result, Shape, Tensor};
 use std::sync::Arc;
 
 /// Unary ops that can be defined in user-land.
@@ -29,6 +29,18 @@ pub trait CustomOp1 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a d3d12 gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn d3d12_fwd(
+        &self,
+        _storage: &D3D12Storage,
+        _layout: &Layout,
+    ) -> Result<(D3D12Storage, Shape)> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
         ))
     }
 
@@ -78,6 +90,18 @@ pub trait CustomOp2 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    fn d3d12_fwd(
+        &self,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+    ) -> Result<(D3D12Storage, Shape)> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
         ))
     }
 
@@ -136,6 +160,20 @@ pub trait CustomOp3 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    fn d3d12_fwd(
+        &self,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+    ) -> Result<(D3D12Storage, Shape)> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
         ))
     }
 
@@ -270,6 +308,12 @@ pub trait InplaceOp1 {
             format!("no metal implementation for {}", self.name()).into(),
         ))
     }
+
+    fn d3d12_fwd(&self, _storage: &mut D3D12Storage, _layout: &Layout) -> Result<()> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
+    }
 }
 
 pub trait InplaceOp2 {
@@ -299,6 +343,18 @@ pub trait InplaceOp2 {
     ) -> Result<()> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    fn d3d12_fwd(
+        &self,
+        _: &mut D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+    ) -> Result<()> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
         ))
     }
 }
@@ -347,6 +403,20 @@ pub trait InplaceOp3 {
     ) -> Result<()> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    fn d3d12_fwd(
+        &self,
+        _: &mut D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+    ) -> Result<()> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
         ))
     }
 }

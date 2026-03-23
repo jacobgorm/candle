@@ -58,10 +58,13 @@ pub mod cpu_backend;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
 mod custom_op;
+#[cfg(feature = "d3d12")]
+pub mod d3d12_backend;
 mod device;
 pub mod display;
 mod dtype;
 pub mod dummy_cuda_backend;
+mod dummy_d3d12_backend;
 pub mod dummy_dtype;
 mod dummy_metal_backend;
 pub mod error;
@@ -121,6 +124,12 @@ pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
 
 #[cfg(not(feature = "metal"))]
 pub use dummy_metal_backend::{MetalDevice, MetalError, MetalStorage};
+
+#[cfg(feature = "d3d12")]
+pub use d3d12_backend::{D3D12Device, D3D12Error, D3D12Storage};
+
+#[cfg(not(feature = "d3d12"))]
+pub use dummy_d3d12_backend::{D3D12Device, D3D12Error, D3D12Storage};
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;

@@ -1,7 +1,7 @@
 //! Candle-specific Error and Result
 use std::{convert::Infallible, fmt::Display};
 
-use crate::{DType, DeviceLocation, Layout, MetalError, Shape};
+use crate::{DType, DeviceLocation, Layout, D3D12Error, MetalError, Shape};
 
 #[derive(Debug, Clone)]
 pub struct MatMulUnexpectedStriding {
@@ -164,6 +164,9 @@ pub enum Error {
     #[error("the candle crate has not been built with metal support")]
     NotCompiledWithMetalSupport,
 
+    #[error("the candle crate has not been built with d3d12 support")]
+    NotCompiledWithD3D12Support,
+
     #[error("cannot find tensor {path}")]
     CannotFindTensor { path: String },
 
@@ -173,6 +176,9 @@ pub enum Error {
 
     #[error("Metal error {0}")]
     Metal(#[from] MetalError),
+
+    #[error("D3D12 error {0}")]
+    D3D12(#[from] D3D12Error),
 
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), feature = "ug"))]
     #[error(transparent)]

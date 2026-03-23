@@ -13,6 +13,7 @@ members = [
 ]
 exclude = [
     "candle-book",
+    "candle-d3d12-kernels",
     "candle-flash-attn",
     "candle-flash-attn-v3",
     "candle-kernels",

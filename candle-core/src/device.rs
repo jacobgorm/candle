@@ -9,14 +9,16 @@ pub enum DeviceLocation {
     Cpu,
     Cuda { gpu_id: usize },
     Metal { gpu_id: usize },
+    D3D12 { gpu_id: usize },
 }
 
-/// Cpu, Cuda, or Metal
+/// Cpu, Cuda, Metal, or D3D12
 #[derive(Debug, Clone)]
 pub enum Device {
     Cpu,
     Cuda(crate::CudaDevice),
     Metal(crate::MetalDevice),
+    D3D12(crate::D3D12Device),
 }
 
 pub trait NdArray {
@@ -238,16 +240,21 @@ impl Device {
     pub fn as_cuda_device(&self) -> Result<&crate::CudaDevice> {
         match self {
             Self::Cuda(d) => Ok(d),
-            Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
-            Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
+            _ => crate::bail!("expected a cuda device, got {:?}", self.location()),
         }
     }
 
     pub fn as_metal_device(&self) -> Result<&crate::MetalDevice> {
         match self {
-            Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
-            Self::Cpu => crate::bail!("expected a metal device, got cpu"),
             Self::Metal(d) => Ok(d),
+            _ => crate::bail!("expected a metal device, got {:?}", self.location()),
+        }
+    }
+
+    pub fn as_d3d12_device(&self) -> Result<&crate::D3D12Device> {
+        match self {
+            Self::D3D12(d) => Ok(d),
+            _ => crate::bail!("expected a d3d12 device, got {:?}", self.location()),
         }
     }
 
@@ -259,11 +266,16 @@ impl Device {
         Ok(Self::Metal(crate::MetalDevice::new(ordinal)?))
     }
 
+    pub fn new_d3d12(ordinal: usize) -> Result<Self> {
+        Ok(Self::D3D12(crate::D3D12Device::new(ordinal)?))
+    }
+
     pub fn set_seed(&self, seed: u64) -> Result<()> {
         match self {
             Self::Cpu => CpuDevice.set_seed(seed),
             Self::Cuda(c) => c.set_seed(seed),
             Self::Metal(m) => m.set_seed(seed),
+            Self::D3D12(d) => d.set_seed(seed),
         }
     }
 
@@ -272,6 +284,7 @@ impl Device {
             Self::Cpu => CpuDevice.get_current_seed(),
             Self::Cuda(c) => c.get_current_seed(),
             Self::Metal(m) => m.get_current_seed(),
+            Self::D3D12(d) => d.get_current_seed(),
         }
     }
 
@@ -280,6 +293,7 @@ impl Device {
             (Self::Cpu, Self::Cpu) => true,
             (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
             (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
+            (Self::D3D12(lhs), Self::D3D12(rhs)) => lhs.same_device(rhs),
             _ => false,
         }
     }
@@ -288,7 +302,8 @@ impl Device {
         match self {
             Self::Cpu => DeviceLocation::Cpu,
             Self::Cuda(device) => device.location(),
-            Device::Metal(device) => device.location(),
+            Self::Metal(device) => device.location(),
+            Self::D3D12(device) => device.location(),
         }
     }
 
@@ -304,10 +319,14 @@ impl Device {
         matches!(self, Self::Metal(_))
     }
 
+    pub fn is_d3d12(&self) -> bool {
+        matches!(self, Self::D3D12(_))
+    }
+
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
-            Self::Cpu => false,
+            Self::Cpu | Self::D3D12(_) => false,
         }
     }
 
@@ -331,6 +350,14 @@ impl Device {
     pub fn metal_if_available(ordinal: usize) -> Result<Self> {
         if crate::utils::metal_is_available() {
             Self::new_metal(ordinal)
+        } else {
+            Ok(Self::Cpu)
+        }
+    }
+
+    pub fn d3d12_if_available(ordinal: usize) -> Result<Self> {
+        if crate::utils::d3d12_is_available() {
+            Self::new_d3d12(ordinal)
         } else {
             Ok(Self::Cpu)
         }
@@ -361,6 +388,10 @@ impl Device {
             Device::Metal(device) => {
                 let storage = device.rand_uniform(shape, dtype, lo, up)?;
                 Ok(Storage::Metal(storage))
+            }
+            Device::D3D12(device) => {
+                let storage = device.rand_uniform(shape, dtype, lo, up)?;
+                Ok(Storage::D3D12(storage))
             }
         }
     }
@@ -400,6 +431,10 @@ impl Device {
                 let storage = device.rand_normal(shape, dtype, mean, std)?;
                 Ok(Storage::Metal(storage))
             }
+            Device::D3D12(device) => {
+                let storage = device.rand_normal(shape, dtype, mean, std)?;
+                Ok(Storage::D3D12(storage))
+            }
         }
     }
 
@@ -426,6 +461,10 @@ impl Device {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
+            Device::D3D12(device) => {
+                let storage = device.zeros_impl(shape, dtype)?;
+                Ok(Storage::D3D12(storage))
+            }
         }
     }
 
@@ -443,6 +482,10 @@ impl Device {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
+            Device::D3D12(device) => {
+                let storage = device.alloc_uninit(shape, dtype)?;
+                Ok(Storage::D3D12(storage))
+            }
         }
     }
 
@@ -456,6 +499,10 @@ impl Device {
             Device::Metal(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Metal(storage))
+            }
+            Device::D3D12(device) => {
+                let storage = device.storage_from_slice(data)?;
+                Ok(Storage::D3D12(storage))
             }
         }
     }
@@ -473,6 +520,11 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
+            Device::D3D12(device) => {
+                let storage = array.to_cpu_storage();
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::D3D12(storage))
+            }
         }
     }
 
@@ -489,6 +541,11 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
+            Device::D3D12(device) => {
+                let storage = S::to_cpu_storage_owned(data);
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::D3D12(storage))
+            }
         }
     }
 
@@ -497,6 +554,7 @@ impl Device {
             Self::Cpu => Ok(()),
             Self::Cuda(d) => d.synchronize(),
             Self::Metal(d) => d.synchronize(),
+            Self::D3D12(d) => d.synchronize(),
         }
     }
 }

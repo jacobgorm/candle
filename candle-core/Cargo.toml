@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
+candle-d3d12-kernels = { path = "../candle-d3d12-kernels", optional = true }
 candle-kernels = { workspace = true, optional = true }
 candle-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
@@ -57,6 +58,7 @@ metal = [
     "dep:candle-metal-kernels",
     "candle-ug?/metal",
 ]
+d3d12 = ["dep:candle-d3d12-kernels"]
 ug = ["dep:candle-ug"]
 
 [[bench]]
@@ -66,6 +68,10 @@ harness = false
 [[example]]
 name = "metal_basics"
 required-features = ["metal"]
+
+[[example]]
+name = "d3d12_basics"
+required-features = ["d3d12"]
 
 [[example]]
 name = "cuda_basics"

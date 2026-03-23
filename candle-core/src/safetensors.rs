@@ -274,6 +274,11 @@ impl Tensor {
                     Device::Metal(_) => {
                         return Err(Error::Msg("Metal support not compiled".to_string()));
                     }
+                    Device::D3D12(_) => {
+                        return Err(Error::Msg(
+                            "Dummy dtypes not yet supported on D3D12".to_string(),
+                        ));
+                    }
                 };
 
                 let op = BackpropOp::none();
@@ -369,6 +374,11 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
         #[cfg(not(feature = "metal"))]
         Device::Metal(_) => {
             return Err(Error::Msg("Metal support not compiled".to_string()));
+        }
+        Device::D3D12(_) => {
+            return Err(Error::Msg(
+                "Dummy dtypes not yet supported on D3D12".to_string(),
+            ));
         }
     };
 
