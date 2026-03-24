@@ -34,6 +34,23 @@ pub struct D3D12Storage {
     pub(crate) dtype: DType,
 }
 
+impl D3D12Storage {
+    /// Access the underlying GPU buffer.
+    pub fn buffer(&self) -> &GpuBuffer {
+        &self.buffer
+    }
+
+    /// Access the underlying GPU buffer as an Arc.
+    pub fn buffer_arc(&self) -> &Arc<GpuBuffer> {
+        &self.buffer
+    }
+
+    /// Number of elements in this storage.
+    pub fn elem_count(&self) -> usize {
+        self.count
+    }
+}
+
 impl std::fmt::Debug for D3D12Storage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("D3D12Storage")

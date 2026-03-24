@@ -12,9 +12,9 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Threading::*;
 
-const MAX_ROOT_CONSTANTS: u32 = 16;
+const MAX_ROOT_CONSTANTS: u32 = 32;
 const MAX_SRVS: u32 = 4;
-const MAX_UAVS: u32 = 1;
+const MAX_UAVS: u32 = 8;
 const DESCRIPTOR_COUNT: u32 = MAX_SRVS + MAX_UAVS;
 
 /// A GPU buffer in default (device-local) heap.
@@ -81,6 +81,26 @@ impl<'a> BufferBinding<'a> {
             first_element: 0,
             num_elements: count,
             stride: 4,
+        }
+    }
+
+    /// Bind as StructuredBuffer<half> (2 bytes per element).
+    pub fn structured_f16(buffer: &'a GpuBuffer, count: u32) -> Self {
+        Self {
+            buffer,
+            first_element: 0,
+            num_elements: count,
+            stride: 2,
+        }
+    }
+
+    /// Bind with a custom stride (for arbitrary struct sizes).
+    pub fn structured(buffer: &'a GpuBuffer, count: u32, stride: u32) -> Self {
+        Self {
+            buffer,
+            first_element: 0,
+            num_elements: count,
+            stride,
         }
     }
 
@@ -567,6 +587,182 @@ impl Gpu {
         Ok(())
     }
 
+    /// Dispatch a compute shader using only UAVs (no SRVs).
+    ///
+    /// Used for Triton-generated HLSL where all buffer args are RWStructuredBuffer.
+    /// UAVs are bound to u0, u1, u2, ... in the order provided.
+    pub fn dispatch_uav_only(
+        &self,
+        pso: &ID3D12PipelineState,
+        root_constants: &[u32],
+        uavs: &[BufferBinding],
+        groups: [u32; 3],
+    ) -> Result<(), D3D12KernelError> {
+        assert!(root_constants.len() <= MAX_ROOT_CONSTANTS as usize);
+        assert!(uavs.len() <= MAX_UAVS as usize);
+
+        unsafe {
+            self.begin_command_list()?;
+
+            self.list.SetPipelineState(pso);
+            self.list.SetComputeRootSignature(&self.root_signature);
+
+            self.list
+                .SetDescriptorHeaps(&[Some(self.srv_uav_heap.clone())]);
+
+            let cpu_start = self
+                .srv_uav_heap
+                .GetCPUDescriptorHandleForHeapStart();
+            let gpu_start = self
+                .srv_uav_heap
+                .GetGPUDescriptorHandleForHeapStart();
+
+            // Fill SRV slots with null (not used)
+            for i in 0..MAX_SRVS {
+                let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: cpu_start.ptr + (i * self.srv_uav_increment) as usize,
+                };
+                self.create_null_srv(handle);
+            }
+
+            // Fill UAV slots (MAX_SRVS + 0, MAX_SRVS + 1, ...)
+            for (i, uav) in uavs.iter().enumerate() {
+                let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: cpu_start.ptr
+                        + ((MAX_SRVS + i as u32) * self.srv_uav_increment) as usize,
+                };
+                self.create_uav(&uav.buffer.resource, uav, handle);
+            }
+            // Fill remaining UAV slots with null
+            for i in uavs.len()..MAX_UAVS as usize {
+                let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: cpu_start.ptr
+                        + ((MAX_SRVS + i as u32) * self.srv_uav_increment) as usize,
+                };
+                self.create_null_uav(handle);
+            }
+
+            // Root constants (parameter 0)
+            for (i, &val) in root_constants.iter().enumerate() {
+                self.list
+                    .SetComputeRoot32BitConstant(0, val, i as u32);
+            }
+
+            // SRV table (parameter 1)
+            self.list.SetComputeRootDescriptorTable(1, gpu_start);
+
+            // UAV table (parameter 2)
+            let uav_gpu_handle = D3D12_GPU_DESCRIPTOR_HANDLE {
+                ptr: gpu_start.ptr + (MAX_SRVS as u64) * (self.srv_uav_increment as u64),
+            };
+            self.list
+                .SetComputeRootDescriptorTable(2, uav_gpu_handle);
+
+            self.list.Dispatch(groups[0], groups[1], groups[2]);
+        }
+
+        self.execute_and_wait()?;
+        Ok(())
+    }
+
+    /// Compile an HLSL compute shader targeting SM 6.2+ with DXC.
+    ///
+    /// Supports half precision (float16_t / half) via `-enable-16bit-types`.
+    /// Shells out to `dxc.exe` (from Windows SDK or standalone DXC).
+    /// Falls back to FXC (SM 5.1) if DXC is not available.
+    pub fn compile_shader_sm6(
+        &self,
+        hlsl_source: &str,
+        entry_point: &str,
+    ) -> Result<Vec<u8>, D3D12KernelError> {
+        match Self::compile_shader_dxc(hlsl_source, entry_point) {
+            Ok(bytecode) => Ok(bytecode),
+            Err(e) => {
+                eprintln!("warning: DXC compilation failed ({e}), falling back to FXC SM 5.1");
+                self.compile_shader(hlsl_source, entry_point)
+            }
+        }
+    }
+
+    /// Compile HLSL to DXIL bytecode using DXC command-line compiler.
+    ///
+    /// Searches for `dxc.exe` on PATH and in Windows SDK directories.
+    fn compile_shader_dxc(
+        hlsl_source: &str,
+        entry_point: &str,
+    ) -> Result<Vec<u8>, D3D12KernelError> {
+        use std::process::Command;
+
+        let dxc_path = Self::find_dxc()
+            .ok_or_else(|| D3D12KernelError::ShaderCompilation(
+                "dxc.exe not found on PATH or in Windows SDK".into()
+            ))?;
+
+        let temp_dir = std::env::temp_dir();
+        let input_path = temp_dir.join("triton_kernel.hlsl");
+        let output_path = temp_dir.join("triton_kernel.cso");
+
+        std::fs::write(&input_path, hlsl_source)
+            .map_err(|e| D3D12KernelError::ShaderCompilation(format!("write temp HLSL: {e}")))?;
+
+        let output = Command::new(&dxc_path)
+            .args([
+                "-T", "cs_6_2",
+                "-enable-16bit-types",
+                "-E", entry_point,
+                "-Fo",
+            ])
+            .arg(&output_path)
+            .arg(&input_path)
+            .output()
+            .map_err(|e| D3D12KernelError::ShaderCompilation(format!("dxc exec failed: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(D3D12KernelError::ShaderCompilation(
+                format!("dxc failed:\n{stderr}\n{stdout}")
+            ));
+        }
+
+        std::fs::read(&output_path)
+            .map_err(|e| D3D12KernelError::ShaderCompilation(format!("read compiled CSO: {e}")))
+    }
+
+    /// Find dxc.exe: check Windows SDK directories, then PATH.
+    fn find_dxc() -> Option<std::path::PathBuf> {
+        // Search Windows SDK directories (newest version first)
+        for base in [
+            r"C:\Program Files (x86)\Windows Kits\10\bin",
+            r"C:\Program Files\Windows Kits\10\bin",
+        ] {
+            let sdk_base = std::path::Path::new(base);
+            if let Ok(entries) = std::fs::read_dir(sdk_base) {
+                let mut versions: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("10."))
+                    .collect();
+                versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+
+                for entry in versions {
+                    let dxc = entry.path().join("x64").join("dxc.exe");
+                    if dxc.exists() {
+                        return Some(dxc);
+                    }
+                }
+            }
+        }
+
+        // Try PATH as fallback
+        if let Ok(output) = std::process::Command::new("dxc").arg("-help").output() {
+            if output.status.success() {
+                return Some("dxc".into());
+            }
+        }
+
+        None
+    }
+
     /// GPU-to-GPU buffer copy with byte offsets.
     pub fn copy_buffer_region(
         &self,
@@ -733,6 +929,24 @@ impl Gpu {
         self.device
             .CreateShaderResourceView(None, Some(&desc), handle);
     }
+
+    unsafe fn create_null_uav(&self, handle: D3D12_CPU_DESCRIPTOR_HANDLE) {
+        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_FLOAT,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: 0,
+                    NumElements: 0,
+                    StructureByteStride: 0,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+                },
+            },
+        };
+        self.device
+            .CreateUnorderedAccessView(None, None, Some(&desc), handle);
+    }
 }
 
 /// Pipeline cache: maps (Source, entry_point) -> compiled PSO.
@@ -782,14 +996,50 @@ impl Pipelines {
 
         Ok(pso)
     }
+
+    /// Load a pipeline from raw HLSL source code (for Triton-generated kernels).
+    ///
+    /// Caches by (entry_point, source hash) to avoid recompilation.
+    pub fn load_pipeline_from_hlsl(
+        &self,
+        gpu: &Gpu,
+        hlsl_source: &str,
+        entry_point: &str,
+    ) -> Result<ID3D12PipelineState, D3D12KernelError> {
+        // Use a sentinel Source for custom HLSL (reuse Matmul as key slot)
+        // and include a hash of the source to differentiate
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hlsl_source.hash(&mut hasher);
+        let hash = hasher.finish();
+        let cache_key = format!("triton_{entry_point}_{hash:x}");
+        let key = (Source::Matmul, cache_key.clone());
+
+        {
+            let cache = self.cache.read()?;
+            if let Some(pso) = cache.get(&key) {
+                return Ok(pso.clone());
+            }
+        }
+
+        let bytecode = gpu.compile_shader(hlsl_source, entry_point)?;
+        let pso = gpu.create_compute_pso(&bytecode)?;
+
+        {
+            let mut cache = self.cache.write()?;
+            cache.insert(key, pso.clone());
+        }
+
+        Ok(pso)
+    }
 }
 
 /// Create the shared root signature used by all compute pipelines.
 ///
 /// Layout:
-/// - Parameter 0: Root constants (16 DWORDs at register b0)
+/// - Parameter 0: Root constants (32 DWORDs at register b0)
 /// - Parameter 1: Descriptor table with SRV range (t0-t3, 4 descriptors)
-/// - Parameter 2: Descriptor table with UAV range (u0, 1 descriptor)
+/// - Parameter 2: Descriptor table with UAV range (u0-u7, 8 descriptors)
 fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, D3D12KernelError> {
     unsafe {
         let srv_range = D3D12_DESCRIPTOR_RANGE {

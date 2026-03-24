@@ -16,6 +16,18 @@ pub struct D3D12Device {
     seed: Arc<std::sync::Mutex<u64>>,
 }
 
+impl D3D12Device {
+    /// Access the underlying D3D12 GPU context.
+    pub fn gpu(&self) -> &Arc<Gpu> {
+        &self.gpu
+    }
+
+    /// Access the pipeline cache.
+    pub fn pipelines(&self) -> &Arc<Pipelines> {
+        &self.pipelines
+    }
+}
+
 impl BackendDevice for D3D12Device {
     type Storage = D3D12Storage;
 
