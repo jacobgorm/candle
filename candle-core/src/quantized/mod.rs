@@ -874,7 +874,7 @@ impl crate::CustomOp1 for QTensor {
         // CPU fallback: download D3D12 input → run CPU qmatmul → upload result
         let cpu_storage = storage.to_cpu_storage()?;
         let (cpu_result, shape) = self.cpu_fwd(&cpu_storage, layout)?;
-        let d3d12_result = storage.device.storage_from_cpu_storage(&cpu_result)?;
+        let d3d12_result = storage.device().storage_from_cpu_storage(&cpu_result)?;
         Ok((d3d12_result, shape))
     }
 }
