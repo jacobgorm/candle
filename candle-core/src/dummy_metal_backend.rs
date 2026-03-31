@@ -8,6 +8,9 @@ pub struct MetalDevice;
 #[derive(Debug)]
 pub struct MetalStorage;
 
+/// Stub for non-Metal builds.
+pub struct GpuBuffer;
+
 #[derive(thiserror::Error, Debug)]
 pub enum MetalError {
     #[error("{0}")]

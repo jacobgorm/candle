@@ -1,6 +1,5 @@
-use crate::{DType, Result};
+use crate::{DType, Result, Shape, Storage};
 
-#[cfg(feature = "ug")]
 use candle_metal_kernels::metal::ComputePipeline;
 use candle_metal_kernels::{
     metal::{
@@ -273,6 +272,46 @@ impl MetalDevice {
         Ok(new_buffer)
     }
 
+    /// Create a compute pipeline from pre-compiled metallib data.
+    ///
+    /// This is the standard way to load custom kernels (e.g., from Triton AOT compilation)
+    /// without going through candle's built-in kernel registry.
+    pub fn load_pipeline_from_data(
+        &self,
+        data: &[u8],
+        func_name: &str,
+    ) -> Result<ComputePipeline> {
+        let lib = self
+            .device
+            .new_library_with_data(data)
+            .map_err(MetalError::from)?;
+        let func = lib
+            .get_function(func_name, None)
+            .map_err(MetalError::from)?;
+        let pipeline = self
+            .device
+            .new_compute_pipeline_state_with_function(&func)
+            .map_err(MetalError::from)?;
+        Ok(pipeline)
+    }
+
+    /// Create an uninitialized tensor on this Metal device.
+    ///
+    /// Useful for pre-allocating output buffers for custom kernel dispatch.
+    /// The returned tensor has no gradient tracking.
+    pub fn empty_tensor(&self, shape: impl Into<Shape>, dtype: DType) -> Result<crate::Tensor> {
+        let shape: Shape = shape.into();
+        let n = shape.elem_count();
+        let buffer = self.new_buffer(n, dtype, "empty")?;
+        let storage = super::MetalStorage::new(buffer, self.clone(), n, dtype);
+        Ok(crate::Tensor::from_storage(
+            Storage::Metal(storage),
+            shape,
+            crate::op::BackpropOp::none(),
+            false,
+        ))
+    }
+
     /// Create a metal GPU capture trace on [`path`].
     pub fn capture<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let capture = unsafe { MTLCaptureManager::sharedCaptureManager() };
@@ -293,6 +332,64 @@ impl MetalDevice {
             .startCaptureWithDescriptor_error(&descriptor)
             .map_err(|e| MetalError::from(e.to_string()))?;
         Ok(())
+    }
+}
+
+// ── GpuBuffer: lightweight GPU buffer wrapper for custom kernel dispatch ──
+
+/// A Metal GPU buffer with byte offset, for use with custom compute kernels.
+///
+/// This provides a lightweight alternative to `Tensor` for pre-allocated buffers
+/// that are dispatched directly via `ComputeCommandEncoder`. The buffer is
+/// reference-counted and can be cheaply sliced via `with_offset`.
+pub struct GpuBuffer {
+    buffer: Arc<Buffer>,
+    /// Byte offset into the underlying buffer.
+    pub offset: usize,
+}
+
+impl GpuBuffer {
+    /// Allocate an uninitialized buffer for `count` F16 elements.
+    pub fn alloc_f16(device: &MetalDevice, count: usize) -> Result<Self> {
+        let buffer = device.new_buffer(count, DType::F16, "gpu_f16")?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Allocate an uninitialized buffer for `count` F32 elements.
+    pub fn alloc_f32(device: &MetalDevice, count: usize) -> Result<Self> {
+        let buffer = device.new_buffer(count, DType::F32, "gpu_f32")?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Create from F16 data (upload to GPU).
+    pub fn from_f16_data(device: &MetalDevice, data: &[half::f16]) -> Result<Self> {
+        let buffer = device.new_buffer_with_data(data)?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Create from F32 data (upload to GPU).
+    pub fn from_f32_data(device: &MetalDevice, data: &[f32]) -> Result<Self> {
+        let buffer = device.new_buffer_with_data(data)?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Get the underlying Metal buffer for dispatch.
+    #[inline]
+    pub fn buf(&self) -> &Buffer { &self.buffer }
+
+    /// Raw pointer to buffer contents (for CPU read/write on shared-memory buffers).
+    #[inline]
+    pub fn contents_ptr(&self) -> *mut u8 {
+        unsafe { self.buffer.contents().add(self.offset) }
+    }
+
+    /// Create a view into this buffer at a byte offset.
+    #[inline]
+    pub fn with_offset(&self, byte_offset: usize) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            offset: self.offset + byte_offset,
+        }
     }
 }
 

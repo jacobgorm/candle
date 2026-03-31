@@ -120,10 +120,10 @@ pub use dummy_cuda_backend as cuda;
 pub use cuda::{CudaDevice, CudaStorage};
 
 #[cfg(feature = "metal")]
-pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
+pub use metal_backend::{GpuBuffer, MetalDevice, MetalError, MetalStorage};
 
 #[cfg(not(feature = "metal"))]
-pub use dummy_metal_backend::{MetalDevice, MetalError, MetalStorage};
+pub use dummy_metal_backend::{GpuBuffer, MetalDevice, MetalError, MetalStorage};
 
 #[cfg(feature = "d3d12")]
 pub use d3d12_backend::{D3D12Device, D3D12Error, D3D12Storage};
