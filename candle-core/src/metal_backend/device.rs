@@ -164,6 +164,16 @@ impl MetalDevice {
         Ok(())
     }
 
+    /// Commit all pending command buffers without waiting for completion.
+    /// Use this to ensure prior GPU work is submitted before starting a new
+    /// command encoder that depends on it (Metal guarantees FIFO ordering
+    /// within the same command queue).
+    pub fn flush(&self) -> Result<()> {
+        let commands = self.commands.write().map_err(MetalError::from)?;
+        commands.flush().map_err(MetalError::from)?;
+        Ok(())
+    }
+
     pub fn kernels(&self) -> &Kernels {
         &self.kernels
     }

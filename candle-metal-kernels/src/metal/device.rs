@@ -1,6 +1,7 @@
 use crate::{
     Buffer, CommandQueue, ComputePipeline, Function, Library, MTLResourceOptions, MetalKernelError,
 };
+use dispatch2::DispatchData;
 use objc2::{rc::Retained, runtime::AnyObject, runtime::ProtocolObject};
 use objc2_foundation::NSString;
 use objc2_metal::{MTLCompileOptions, MTLCreateSystemDefaultDevice, MTLDevice};
@@ -99,6 +100,19 @@ impl Device {
             .as_ref()
             .newLibraryWithSource_options_error(&NSString::from_str(source), options)
             .unwrap();
+
+        Ok(Library::new(raw))
+    }
+
+    pub fn new_library_with_data(
+        &self,
+        data: &[u8],
+    ) -> Result<Library, MetalKernelError> {
+        let dispatch_data = DispatchData::from_bytes(data);
+        let raw = self
+            .as_ref()
+            .newLibraryWithData_error(&dispatch_data)
+            .map_err(|e| MetalKernelError::LoadLibraryError(e.to_string()))?;
 
         Ok(Library::new(raw))
     }
