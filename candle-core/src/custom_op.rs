@@ -1,4 +1,3 @@
-use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BackpropOp, Op};
 use crate::tensor::from_storage;
 use crate::{CpuStorage, CudaStorage, D3D12Storage, Layout, MetalStorage, Result, Shape, Tensor};
@@ -33,16 +32,16 @@ pub trait CustomOp1 {
         ))
     }
 
-    /// The forward pass, as run on a d3d12 gpu device. Falls back to CPU by default.
+    /// The forward pass, as run on a d3d12 gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
     fn d3d12_fwd(
         &self,
-        storage: &D3D12Storage,
-        layout: &Layout,
+        _storage: &D3D12Storage,
+        _layout: &Layout,
     ) -> Result<(D3D12Storage, Shape)> {
-        let cpu_storage = storage.to_cpu_storage()?;
-        let (cpu_result, shape) = self.cpu_fwd(&cpu_storage, layout)?;
-        let d3d12_result = storage.device().storage_from_cpu_storage(&cpu_result)?;
-        Ok((d3d12_result, shape))
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 
     /// This function takes as argument the argument `arg` used in the forward pass, the result
@@ -96,16 +95,14 @@ pub trait CustomOp2 {
 
     fn d3d12_fwd(
         &self,
-        s1: &D3D12Storage,
-        l1: &Layout,
-        s2: &D3D12Storage,
-        l2: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
     ) -> Result<(D3D12Storage, Shape)> {
-        let cpu_s1 = s1.to_cpu_storage()?;
-        let cpu_s2 = s2.to_cpu_storage()?;
-        let (cpu_result, shape) = self.cpu_fwd(&cpu_s1, l1, &cpu_s2, l2)?;
-        let d3d12_result = s1.device().storage_from_cpu_storage(&cpu_result)?;
-        Ok((d3d12_result, shape))
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 
     fn bwd(
@@ -168,19 +165,16 @@ pub trait CustomOp3 {
 
     fn d3d12_fwd(
         &self,
-        s1: &D3D12Storage,
-        l1: &Layout,
-        s2: &D3D12Storage,
-        l2: &Layout,
-        s3: &D3D12Storage,
-        l3: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
     ) -> Result<(D3D12Storage, Shape)> {
-        let cpu_s1 = s1.to_cpu_storage()?;
-        let cpu_s2 = s2.to_cpu_storage()?;
-        let cpu_s3 = s3.to_cpu_storage()?;
-        let (cpu_result, shape) = self.cpu_fwd(&cpu_s1, l1, &cpu_s2, l2, &cpu_s3, l3)?;
-        let d3d12_result = s1.device().storage_from_cpu_storage(&cpu_result)?;
-        Ok((d3d12_result, shape))
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 
     fn bwd(
@@ -315,11 +309,10 @@ pub trait InplaceOp1 {
         ))
     }
 
-    fn d3d12_fwd(&self, storage: &mut D3D12Storage, layout: &Layout) -> Result<()> {
-        let mut cpu_storage = storage.to_cpu_storage()?;
-        self.cpu_fwd(&mut cpu_storage, layout)?;
-        *storage = storage.device().storage_from_cpu_storage(&cpu_storage)?;
-        Ok(())
+    fn d3d12_fwd(&self, _storage: &mut D3D12Storage, _layout: &Layout) -> Result<()> {
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 }
 
@@ -355,16 +348,14 @@ pub trait InplaceOp2 {
 
     fn d3d12_fwd(
         &self,
-        s1: &mut D3D12Storage,
-        l1: &Layout,
-        s2: &D3D12Storage,
-        l2: &Layout,
+        _: &mut D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
     ) -> Result<()> {
-        let mut cpu_s1 = s1.to_cpu_storage()?;
-        let cpu_s2 = s2.to_cpu_storage()?;
-        self.cpu_fwd(&mut cpu_s1, l1, &cpu_s2, l2)?;
-        *s1 = s1.device().storage_from_cpu_storage(&cpu_s1)?;
-        Ok(())
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 }
 
@@ -417,19 +408,16 @@ pub trait InplaceOp3 {
 
     fn d3d12_fwd(
         &self,
-        s1: &mut D3D12Storage,
-        l1: &Layout,
-        s2: &D3D12Storage,
-        l2: &Layout,
-        s3: &D3D12Storage,
-        l3: &Layout,
+        _: &mut D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
+        _: &D3D12Storage,
+        _: &Layout,
     ) -> Result<()> {
-        let mut cpu_s1 = s1.to_cpu_storage()?;
-        let cpu_s2 = s2.to_cpu_storage()?;
-        let cpu_s3 = s3.to_cpu_storage()?;
-        self.cpu_fwd(&mut cpu_s1, l1, &cpu_s2, l2, &cpu_s3, l3)?;
-        *s1 = s1.device().storage_from_cpu_storage(&cpu_s1)?;
-        Ok(())
+        Err(crate::Error::D3D12(
+            format!("no d3d12 implementation for {}", self.name()).into(),
+        ))
     }
 }
 

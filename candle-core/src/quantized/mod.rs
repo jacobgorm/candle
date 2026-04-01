@@ -1,6 +1,5 @@
 use crate::{
-    backend::{BackendDevice, BackendStorage},
-    CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D,
+    backend::BackendStorage, CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D,
 };
 use k_quants::*;
 use std::borrow::Cow;
@@ -77,10 +76,7 @@ impl Device {
                 let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
                 Ok(QStorage::Cuda(storage))
             }
-            Device::D3D12(_) => {
-                let storage = dtype.cpu_zeros(elem_count);
-                Ok(QStorage::Cpu(storage))
-            }
+            Device::D3D12(_) => crate::bail!("quantized tensors are not supported on D3D12"),
         }
     }
 }
@@ -129,7 +125,7 @@ impl QStorage {
                 GgmlDType::Q8K => cuda::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized(d, as_t_slice::<bf16>(data)),
             },
-            Device::D3D12(_) => Ok(Self::Cpu(dtype.from_data(data))),
+            Device::D3D12(_) => crate::bail!("quantized tensors are not supported on D3D12"),
         }
     }
 
@@ -864,18 +860,6 @@ impl crate::CustomOp1 for QTensor {
             _ => unreachable!("Cannot call cuda matmul on non cuda QTensor"),
         };
         self_storage.fwd(&self.shape, storage, layout)
-    }
-
-    fn d3d12_fwd(
-        &self,
-        storage: &crate::D3D12Storage,
-        layout: &crate::Layout,
-    ) -> Result<(crate::D3D12Storage, Shape)> {
-        // CPU fallback: download D3D12 input → run CPU qmatmul → upload result
-        let cpu_storage = storage.to_cpu_storage()?;
-        let (cpu_result, shape) = self.cpu_fwd(&cpu_storage, layout)?;
-        let d3d12_result = storage.device().storage_from_cpu_storage(&cpu_result)?;
-        Ok((d3d12_result, shape))
     }
 }
 
