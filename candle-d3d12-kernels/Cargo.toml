@@ -10,7 +10,6 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 thiserror = "2"
 tracing = "0.1"
 
@@ -19,7 +18,6 @@ version = "0.58"
 features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Foundation",
