@@ -361,6 +361,18 @@ impl GpuBuffer {
         Ok(Self { buffer, offset: 0 })
     }
 
+    /// Allocate an uninitialized buffer for `count` bytes (for int8 data).
+    pub fn alloc_i8(device: &MetalDevice, count: usize) -> Result<Self> {
+        let buffer = device.new_buffer(count, DType::U8, "gpu_i8")?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Create from I8 data (upload to GPU).
+    pub fn from_i8_data(device: &MetalDevice, data: &[i8]) -> Result<Self> {
+        let buffer = device.new_buffer_with_data(data)?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
     /// Create from F16 data (upload to GPU).
     pub fn from_f16_data(device: &MetalDevice, data: &[half::f16]) -> Result<Self> {
         let buffer = device.new_buffer_with_data(data)?;
