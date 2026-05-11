@@ -14,6 +14,7 @@ const MAX_UAVS: u32 = 8;
 const DESCRIPTOR_COUNT: u32 = MAX_SRVS + MAX_UAVS;
 
 /// A GPU buffer in default (device-local) heap.
+#[derive(Clone)]
 pub struct GpuBuffer {
     pub(crate) resource: ID3D12Resource,
     pub(crate) size_bytes: u64,
@@ -68,8 +69,6 @@ impl<'a> BufferBinding<'a> {
     }
 }
 
-/// Maximum number of dispatches in a single batch.
-const MAX_BATCH_DISPATCHES: u32 = 512;
 
 /// Core D3D12 GPU context for compute operations.
 pub struct Gpu {
@@ -85,8 +84,7 @@ pub struct Gpu {
     srv_uav_increment: u32,
     // The shared root signature used by all compute pipelines
     root_signature: ID3D12RootSignature,
-    // Batch dispatch state: descriptor offset within the heap
-    batch_offset: std::cell::Cell<u32>,
+    // Batch mode flag: prevents uploads mid-computation
     batch_active: std::cell::Cell<bool>,
 }
 
@@ -154,12 +152,10 @@ impl Gpu {
                 .CreateCommandQueue(&queue_desc)
                 .map_err(|e| D3D12KernelError::DeviceCreation(e.to_string()))?;
 
-            // Create command allocator
+            // Create command allocator and list
             let allocator: ID3D12CommandAllocator = device
                 .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE)
                 .map_err(|e| D3D12KernelError::DeviceCreation(e.to_string()))?;
-
-            // Create command list (closed initially)
             let list: ID3D12GraphicsCommandList = device
                 .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, &allocator, None)
                 .map_err(|e| D3D12KernelError::DeviceCreation(e.to_string()))?;
@@ -177,7 +173,7 @@ impl Gpu {
             // Create shader-visible descriptor heap (large enough for batched dispatches)
             let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: DESCRIPTOR_COUNT * MAX_BATCH_DISPATCHES,
+                NumDescriptors: DESCRIPTOR_COUNT,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             };
@@ -220,22 +216,19 @@ impl Gpu {
                         },
                     },
                 };
-                for dispatch_idx in 0..MAX_BATCH_DISPATCHES {
-                    let desc_base = dispatch_idx * DESCRIPTOR_COUNT;
-                    for srv_idx in 0..MAX_SRVS {
-                        let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-                            ptr: cpu_start.ptr
-                                + ((desc_base + srv_idx) as usize * srv_uav_increment as usize),
-                        };
-                        device.CreateShaderResourceView(None, Some(&null_srv_desc), handle);
-                    }
-                    for uav_idx in 0..MAX_UAVS {
-                        let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-                            ptr: cpu_start.ptr
-                                + ((desc_base + MAX_SRVS + uav_idx) as usize * srv_uav_increment as usize),
-                        };
-                        device.CreateUnorderedAccessView(None, None, Some(&null_uav_desc), handle);
-                    }
+                for srv_idx in 0..MAX_SRVS {
+                    let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                        ptr: cpu_start.ptr
+                            + (srv_idx as usize * srv_uav_increment as usize),
+                    };
+                    device.CreateShaderResourceView(None, Some(&null_srv_desc), handle);
+                }
+                for uav_idx in 0..MAX_UAVS {
+                    let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                        ptr: cpu_start.ptr
+                            + ((MAX_SRVS + uav_idx) as usize * srv_uav_increment as usize),
+                    };
+                    device.CreateUnorderedAccessView(None, None, Some(&null_uav_desc), handle);
                 }
             }
 
@@ -250,7 +243,6 @@ impl Gpu {
                 srv_uav_heap,
                 srv_uav_increment,
                 root_signature,
-                batch_offset: std::cell::Cell::new(0),
                 batch_active: std::cell::Cell::new(false),
             })
         }
@@ -342,13 +334,14 @@ impl Gpu {
         })
     }
 
-    /// Record a buffer copy into the active batch command list.
-    pub fn record_copy(&self, src: &GpuBuffer, dst: &GpuBuffer, size_bytes: u64) {
-        if !self.batch_active.get() { return; }
+    /// Copy buffer contents on the GPU. Executes immediately.
+    pub fn record_copy(&self, src: &GpuBuffer, dst: &GpuBuffer, size_bytes: u64) -> Result<(), D3D12KernelError> {
         let size = std::cmp::min(size_bytes, std::cmp::min(src.size_bytes, dst.size_bytes));
+        self.begin_command_list()?;
         unsafe {
             self.list.CopyBufferRegion(&dst.resource, 0, &src.resource, 0, size);
         }
+        self.execute_and_wait()
     }
 
     /// Map a readback buffer, copy data to a Vec, and unmap.
@@ -432,6 +425,7 @@ impl Gpu {
     ) -> Result<(), D3D12KernelError> {
         let size = data.len() as u64;
         assert!(size <= dst.size_bytes);
+        assert!(!self.batch_active.get(), "upload_to_buffer called during active batch!");
 
         // Create temporary upload buffer
         let upload_heap_props = D3D12_HEAP_PROPERTIES {
@@ -495,6 +489,7 @@ impl Gpu {
         src: &GpuBuffer,
         size_bytes: u64,
     ) -> Result<Vec<u8>, D3D12KernelError> {
+        assert!(!self.batch_active.get(), "download_buffer called during active batch!");
         let size = std::cmp::min(size_bytes, src.size_bytes);
 
         // Create temporary readback buffer
@@ -577,7 +572,6 @@ impl Gpu {
     }
 
     /// Dispatch a compute shader using only UAVs (no SRVs).
-    /// If a batch is active, records without GPU sync. Otherwise executes immediately.
     pub fn dispatch_uav_only(
         &self,
         pso: &ID3D12PipelineState,
@@ -588,9 +582,9 @@ impl Gpu {
         assert!(root_constants.len() <= MAX_ROOT_CONSTANTS as usize);
         assert!(uavs.len() <= MAX_UAVS as usize);
 
-        unsafe {
-            self.begin_command_list()?;
+        self.begin_command_list()?;
 
+        unsafe {
             self.list.SetPipelineState(pso);
             self.list.SetComputeRootSignature(&self.root_signature);
 
@@ -604,8 +598,6 @@ impl Gpu {
                 .srv_uav_heap
                 .GetGPUDescriptorHandleForHeapStart();
 
-            // Fill UAV slots (MAX_SRVS + 0, MAX_SRVS + 1, ...)
-            // SRV slots and unused UAV slots pre-filled with null at init time.
             for (i, uav) in uavs.iter().enumerate() {
                 let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
                     ptr: cpu_start.ptr
@@ -614,21 +606,16 @@ impl Gpu {
                 self.create_uav(&uav.buffer.resource, uav, handle);
             }
 
-            // Root constants (parameter 0)
             for (i, &val) in root_constants.iter().enumerate() {
-                self.list
-                    .SetComputeRoot32BitConstant(0, val, i as u32);
+                self.list.SetComputeRoot32BitConstant(0, val, i as u32);
             }
 
-            // SRV table (parameter 1)
             self.list.SetComputeRootDescriptorTable(1, gpu_start);
 
-            // UAV table (parameter 2)
             let uav_gpu_handle = D3D12_GPU_DESCRIPTOR_HANDLE {
                 ptr: gpu_start.ptr + (MAX_SRVS as u64) * (self.srv_uav_increment as u64),
             };
-            self.list
-                .SetComputeRootDescriptorTable(2, uav_gpu_handle);
+            self.list.SetComputeRootDescriptorTable(2, uav_gpu_handle);
 
             self.list.Dispatch(groups[0], groups[1], groups[2]);
         }
@@ -637,42 +624,19 @@ impl Gpu {
         Ok(())
     }
 
-    /// Begin a batch of dispatches. All subsequent `record_dispatch` calls
-    /// will be recorded into a single command list without GPU synchronization.
-    /// Call `end_batch()` to execute all recorded dispatches at once.
+    /// Begin a batch of dispatches. Weights must be pre-uploaded before this call.
+    /// Each record_dispatch executes immediately without redundant setup.
     pub fn begin_batch(&self) -> Result<(), D3D12KernelError> {
-        self.batch_offset.set(0);
         self.batch_active.set(true);
-        self.begin_command_list()?;
-        unsafe {
-            self.list
-                .SetDescriptorHeaps(&[Some(self.srv_uav_heap.clone())]);
-            self.list.SetComputeRootSignature(&self.root_signature);
-        }
         Ok(())
     }
 
-    /// Record a UAV barrier (flush all UAV caches).
-    /// Only valid during an active batch. Use between dispatches that have
-    /// read-after-write dependencies on the same buffers.
+    /// No-op: each dispatch is a full submit+wait cycle, guaranteeing UAV coherence.
     pub fn record_uav_barrier(&self) {
-        if !self.batch_active.get() { return; }
-        unsafe {
-            let barrier = D3D12_RESOURCE_BARRIER {
-                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
-                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
-                        pResource: std::mem::ManuallyDrop::new(None),
-                    }),
-                },
-            };
-            self.list.ResourceBarrier(&[barrier]);
-        }
     }
 
-    /// Record a single dispatch into the active batch.
-    /// Falls back to single-dispatch mode if no batch is active.
+    /// Dispatch a compute shader. In batch mode or not, executes immediately.
+    /// Batch mode exists to guard against uploads mid-computation.
     pub fn record_dispatch(
         &self,
         pso: &ID3D12PipelineState,
@@ -680,77 +644,25 @@ impl Gpu {
         uavs: &[BufferBinding],
         groups: [u32; 3],
     ) -> Result<(), D3D12KernelError> {
-        if !self.batch_active.get() {
-            return self.dispatch_uav_only(pso, root_constants, uavs, groups);
-        }
+        self.dispatch_uav_only(pso, root_constants, uavs, groups)
+    }
 
-        assert!(root_constants.len() <= MAX_ROOT_CONSTANTS as usize);
-        assert!(uavs.len() <= MAX_UAVS as usize);
-
-        let offset = self.batch_offset.get();
-        assert!(
-            offset < MAX_BATCH_DISPATCHES,
-            "batch dispatch limit exceeded"
-        );
-
-        unsafe {
-            self.list.SetPipelineState(pso);
-
-            let desc_base = offset * DESCRIPTOR_COUNT;
-
-            let cpu_start = self
-                .srv_uav_heap
-                .GetCPUDescriptorHandleForHeapStart();
-            let gpu_start = self
-                .srv_uav_heap
-                .GetGPUDescriptorHandleForHeapStart();
-
-            let cpu_base = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: cpu_start.ptr + (desc_base * self.srv_uav_increment) as usize,
-            };
-            let gpu_base = D3D12_GPU_DESCRIPTOR_HANDLE {
-                ptr: gpu_start.ptr + (desc_base as u64) * (self.srv_uav_increment as u64),
-            };
-
-            // SRV + unused UAV slots pre-filled with null at init time.
-
-            // Fill UAV slots
-            for (i, uav) in uavs.iter().enumerate() {
-                let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-                    ptr: cpu_base.ptr
-                        + ((MAX_SRVS + i as u32) * self.srv_uav_increment) as usize,
-                };
-                self.create_uav(&uav.buffer.resource, uav, handle);
-            }
-
-            // Root constants
-            for (i, &val) in root_constants.iter().enumerate() {
-                self.list
-                    .SetComputeRoot32BitConstant(0, val, i as u32);
-            }
-
-            // SRV table
-            self.list.SetComputeRootDescriptorTable(1, gpu_base);
-
-            // UAV table
-            let uav_gpu = D3D12_GPU_DESCRIPTOR_HANDLE {
-                ptr: gpu_base.ptr + (MAX_SRVS as u64) * (self.srv_uav_increment as u64),
-            };
-            self.list.SetComputeRootDescriptorTable(2, uav_gpu);
-
-            self.list.Dispatch(groups[0], groups[1], groups[2]);
-        }
-
-        self.batch_offset.set(offset + 1);
+    /// End the batch. Since dispatches execute immediately, this just clears the flag.
+    pub fn end_batch(&self) -> Result<(), D3D12KernelError> {
+        self.batch_active.set(false);
         Ok(())
     }
 
-    /// Execute all recorded dispatches and wait for completion.
-    pub fn end_batch(&self) -> Result<(), D3D12KernelError> {
-        self.batch_active.set(false);
-        self.execute_and_wait()?;
-        self.batch_offset.set(0);
-        Ok(())
+    /// Whether a batch is currently active.
+    pub fn is_batch_active(&self) -> bool {
+        self.batch_active.get()
+    }
+
+    /// End batch if one is active, otherwise no-op.
+    pub fn end_batch_if_active(&self) {
+        if self.batch_active.get() {
+            let _ = self.end_batch();
+        }
     }
 
     fn begin_command_list(&self) -> Result<(), D3D12KernelError> {
@@ -783,9 +695,15 @@ impl Gpu {
                 .Signal(&self.fence, val)
                 .map_err(|e| D3D12KernelError::Dispatch(e.to_string()))?;
 
-            // Spin-wait: avoids kernel-mode WaitForSingleObject overhead (~3-5ms).
             while self.fence.GetCompletedValue() < val {
                 std::hint::spin_loop();
+            }
+
+            let hr = self.device.GetDeviceRemovedReason();
+            if hr.is_err() {
+                return Err(D3D12KernelError::Dispatch(
+                    format!("Device removed: {hr:?}")
+                ));
             }
         }
         Ok(())
