@@ -225,6 +225,23 @@ impl MetalDevice {
         Ok(Arc::new(buffer))
     }
 
+    /// Creates a new shared-memory buffer (CPU + GPU accessible).
+    ///
+    /// Used by GpuBuffer for custom kernel dispatch where CPU upload/download
+    /// is needed (StorageModePrivate segfaults on Intel Macs).
+    pub fn new_shared_buffer(
+        &self,
+        element_count: usize,
+        dtype: DType,
+    ) -> Result<Arc<Buffer>> {
+        let size = element_count * dtype.size_in_bytes();
+        let buffer = self
+            .device
+            .new_buffer(size, RESOURCE_OPTIONS)
+            .map_err(MetalError::from)?;
+        Ok(Arc::new(buffer))
+    }
+
     /// Creates a new buffer from data.
     ///
     /// Does not require synchronization, as [newBufferWithBytes](https://developer.apple.com/documentation/metal/mtldevice/1433429-newbufferwithbytes)
@@ -342,6 +359,7 @@ impl MetalDevice {
 /// This provides a lightweight alternative to `Tensor` for pre-allocated buffers
 /// that are dispatched directly via `ComputeCommandEncoder`. The buffer is
 /// reference-counted and can be cheaply sliced via `with_offset`.
+#[derive(Clone)]
 pub struct GpuBuffer {
     buffer: Arc<Buffer>,
     /// Byte offset into the underlying buffer.
@@ -349,21 +367,38 @@ pub struct GpuBuffer {
 }
 
 impl GpuBuffer {
-    /// Allocate an uninitialized buffer for `count` F16 elements.
+    pub fn from_arc(buffer: Arc<Buffer>) -> Self {
+        Self { buffer, offset: 0 }
+    }
+
+    /// Allocate a buffer for `count` F16 elements (from Metal buffer pool).
     pub fn alloc_f16(device: &MetalDevice, count: usize) -> Result<Self> {
         let buffer = device.new_buffer(count, DType::F16, "gpu_f16")?;
         Ok(Self { buffer, offset: 0 })
     }
 
-    /// Allocate an uninitialized buffer for `count` F32 elements.
+    /// Allocate a buffer for `count` F32 elements (from Metal buffer pool).
     pub fn alloc_f32(device: &MetalDevice, count: usize) -> Result<Self> {
         let buffer = device.new_buffer(count, DType::F32, "gpu_f32")?;
         Ok(Self { buffer, offset: 0 })
     }
 
-    /// Allocate an uninitialized buffer for `count` bytes (for int8 data).
+    /// Allocate a GPU-private buffer for `count` bytes (for int8 data).
     pub fn alloc_i8(device: &MetalDevice, count: usize) -> Result<Self> {
         let buffer = device.new_buffer(count, DType::U8, "gpu_i8")?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Allocate a CPU+GPU shared buffer for `count` F16 elements.
+    /// Use for buffers that need `contents_ptr()` access (upload/download).
+    pub fn alloc_shared_f16(device: &MetalDevice, count: usize) -> Result<Self> {
+        let buffer = device.new_shared_buffer(count, DType::F16)?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    /// Allocate a CPU+GPU shared buffer for `count` F32 elements.
+    pub fn alloc_shared_f32(device: &MetalDevice, count: usize) -> Result<Self> {
+        let buffer = device.new_shared_buffer(count, DType::F32)?;
         Ok(Self { buffer, offset: 0 })
     }
 
